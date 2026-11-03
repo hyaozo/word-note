@@ -35,6 +35,7 @@ const els = {
   searchClearButton: $('searchClearButton'),
   statsText: $('statsText'),
   noteList: $('noteList'),
+
   hideMemorized: $('hideMemorized'),
   sortSelect: $('sortSelect'),
   pageSizeSelect: $('pageSizeSelect'),
@@ -49,6 +50,7 @@ const els = {
   modalText: $('modalText'),
   modalCancel: $('modalCancel'),
   modalConfirm: $('modalConfirm'),
+
   deleteConfirmModal: $('deleteConfirmModal'),
   deleteModalTitle: $('deleteModalTitle'),
   deleteModalText: $('deleteModalText'),
@@ -240,9 +242,11 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;');
 }
 
+let messageTimer = null;
 function showMessage(text) {
   els.message.textContent = text;
-  setTimeout(() => {
+  clearTimeout(messageTimer);
+  messageTimer = setTimeout(() => {
     els.message.textContent = '';
   }, 2200);
 }
@@ -399,6 +403,7 @@ function getPageSize() {
 
 function getPagedNotes(filteredNotes) {
   const pageSize = getPageSize();
+
   if (pageSize === Infinity) {
     return {
       items: filteredNotes,
@@ -445,7 +450,8 @@ function updateSearchClearButton() {
 
 function updateStats(notes = getNotes()) {
   const hiddenCount = notes.filter(note => note.checkMemorized).length;
-  els.statsText.textContent = `전체 ${notes.length}개 · 숨김 ${hiddenCount}개`;
+  const hideState = els.hideMemorized.checked ? '켜짐' : '꺼짐';
+  els.statsText.textContent = `전체 ${notes.length}개 · 숨김 ${hiddenCount}개 · 외운 단어 숨김 ${hideState}`;
 }
 
 function syncSelectAllState(notes) {
@@ -1268,12 +1274,6 @@ els.searchInput.addEventListener('input', () => {
   renderNotes();
 });
 
-els.hideMemorized.addEventListener('change', () => {
-  currentPage = 1;
-  syncHideMemorizedUI();
-  renderNotes();
-});
-
 els.searchClearButton.addEventListener('click', () => {
   els.searchInput.value = '';
   currentPage = 1;
@@ -1289,6 +1289,14 @@ els.pageSizeSelect.addEventListener('change', () => {
   currentPage = 1;
   renderNotes();
 });
+
+if (els.hideMemorized) {
+  els.hideMemorized.addEventListener('change', () => {
+    currentPage = 1;
+    syncHideMemorizedUI();
+    renderNotes();
+  });
+}
 
 els.prevPageButton.addEventListener('click', () => {
   if (currentPage > 1) {
@@ -1331,6 +1339,7 @@ els.quizStudyAgainButton.addEventListener('click', quizStudyAgain);
 els.quizNextButton.addEventListener('click', getNextQuizCard);
 
 [els.confirmModal, els.deleteConfirmModal, els.quizModal, els.previewModal, els.updateCheckModal].forEach(modal => {
+  if (!modal) return;
   modal.addEventListener('click', e => {
     if (e.target !== modal) return;
     if (modal === els.confirmModal) closeConfirmModal();
