@@ -109,6 +109,9 @@ let pendingImportRows = [];
 let pendingImportSummary = null;
 
 let currentPage = 1;
+let notesState = [];
+let messageTimer = null;
+let searchDebounceTimer = null;
 
 const POS_MAP = {
   '명': '명', '명사': '명',
@@ -120,12 +123,18 @@ const POS_MAP = {
   '숙': '숙', '숙어': '숙'
 };
 
-function isUnlocked() {
-  return localStorage.getItem(UNLOCK_KEY) === 'true';
+function cloneNotes(notes) {
+  return notes.map(note => ({
+    ...note,
+    pronunciation: note.pronunciation || '',
+    pos: Array.isArray(note.pos) ? [...note.pos] : [],
+    checkedForDelete: Boolean(note.checkedForDelete)
+  }));
 }
 
-function getNotes() {
-  return JSON.parse(localStorage.getItem(NOTES_KEY) || '[]').map(note => ({
+function loadNotesState() {
+  const raw = JSON.parse(localStorage.getItem(NOTES_KEY) || '[]');
+  notesState = raw.map(note => ({
     ...note,
     pronunciation: note.pronunciation || '',
     pos: Array.isArray(note.pos) ? note.pos : [],
@@ -133,8 +142,23 @@ function getNotes() {
   }));
 }
 
+function getNotes() {
+  return cloneNotes(notesState);
+}
+
 function saveNotes(notes) {
-  localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  notesState = cloneNotes(notes);
+  localStorage.setItem(NOTES_KEY, JSON.stringify(notesState));
+}
+
+function updateNotes(mutator) {
+  const draft = cloneNotes(notesState);
+  mutator(draft);
+  saveNotes(draft);
+}
+
+function isUnlocked() {
+  return localStorage.getItem(UNLOCK_KEY) === 'true';
 }
 
 function hasBackup() {
@@ -142,7 +166,7 @@ function hasBackup() {
 }
 
 function saveManualBackup() {
-  localStorage.setItem(BACKUP_KEY, localStorage.getItem(NOTES_KEY) || '[]');
+  localStorage.setItem(BACKUP_KEY, JSON.stringify(notesState));
   showMessage('현재 상태를 백업했습니다.');
 }
 
@@ -152,8 +176,9 @@ function restoreBackupNotes() {
     return;
   }
 
-  const backup = localStorage.getItem(BACKUP_KEY);
-  localStorage.setItem(NOTES_KEY, backup || '[]');
+  const backup = localStorage.getItem(BACKUP_KEY) || '[]';
+  localStorage.setItem(NOTES_KEY, backup);
+  loadNotesState();
   clearInputs();
   currentPage = 1;
   renderNotes();
@@ -242,7 +267,6 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;');
 }
 
-let messageTimer = null;
 function showMessage(text) {
   els.message.textContent = text;
   clearTimeout(messageTimer);
@@ -322,8 +346,7 @@ function fetchMeaning(word) {
 
   els.resultWord.textContent = cleanedWord;
 
-  const notes = getNotes();
-  const savedNote = notes.find(item => item.word.toLowerCase() === cleanedWord);
+  const savedNote = notesState.find(item => item.word.toLowerCase() === cleanedWord);
 
   if (savedNote) {
     els.resultPronunciation.textContent = savedNote.pronunciation || '';
@@ -354,7 +377,7 @@ function openNaverDictionary(word) {
   window.open('https://en.dict.naver.com/#/search?query=' + encodeURIComponent(cleanedWord), '_blank');
 }
 
-function findNoteIndex(word, notes = getNotes()) {
+function findNoteIndex(word, notes = notesState) {
   return notes.findIndex(item => item.word.toLowerCase() === word.toLowerCase());
 }
 
@@ -380,7 +403,7 @@ function sortNotes(notes) {
   return [...notes].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-function getFilteredNotes(sourceNotes = getNotes()) {
+function getFilteredNotes(sourceNotes = notesState) {
   const keyword = els.searchInput.value.trim().toLowerCase();
   const hideChecked = els.hideMemorized.checked;
 
@@ -448,7 +471,7 @@ function updateSearchClearButton() {
   els.searchClearButton.classList.toggle('show', !!els.searchInput.value.trim());
 }
 
-function updateStats(notes = getNotes()) {
+function updateStats(notes = notesState) {
   const hiddenCount = notes.filter(note => note.checkMemorized).length;
   const hideState = els.hideMemorized.checked ? '켜짐' : '꺼짐';
   els.statsText.textContent = `전체 ${notes.length}개 · 숨김 ${hiddenCount}개 · 외운 단어 숨김 ${hideState}`;
@@ -460,14 +483,13 @@ function syncSelectAllState(notes) {
 }
 
 function renderNotes() {
-  const notes = getNotes();
-  const filtered = getFilteredNotes(notes);
+  const filtered = getFilteredNotes(notesState);
   const paged = getPagedNotes(filtered);
 
   els.noteList.innerHTML = '';
-  updateStats(notes);
+  updateStats(notesState);
   updateSearchClearButton();
-  syncSelectAllState(notes);
+  syncSelectAllState(notesState);
   syncHideMemorizedUI();
   updatePagination(filtered.length, paged.totalPages);
 
@@ -476,64 +498,58 @@ function renderNotes() {
     return;
   }
 
-  paged.items.forEach(note => {
+  const html = paged.items.map(note => {
     const posList = note.pos || [];
     const posText = posList.join(' · ');
-    const item = document.createElement('div');
 
-    item.className =
-      'note-item note-clickable' +
-      (note.checkMemorized ? ' memorized' : '') +
-      (note.checkedForDelete ? ' selected-delete' : '');
-
-    item.innerHTML = `
-      <div class="note-line">
-        <div class="delete-check-wrap">
-          <input type="checkbox" ${note.checkedForDelete ? 'checked' : ''} data-delete-check="${note.id}">
-        </div>
-
-        <div class="word-area" data-load="${note.id}">
-          <div class="word-inline">
-            <span class="note-word ${note.checkWord ? 'highlight-word' : ''}">${escapeHtml(note.word)}</span>
-            <span class="note-pron">${escapeHtml(note.pronunciation || '')}</span>
+    return `
+      <div class="note-item note-clickable${note.checkMemorized ? ' memorized' : ''}${note.checkedForDelete ? ' selected-delete' : ''}">
+        <div class="note-line">
+          <div class="delete-check-wrap">
+            <input type="checkbox" ${note.checkedForDelete ? 'checked' : ''} data-delete-check="${note.id}">
           </div>
-          ${posText ? `<div class="selected-pos-text">${escapeHtml(posText)}</div>` : ''}
-        </div>
 
-        <div data-load="${note.id}">
-          <span class="note-meaning ${note.checkMeaning ? 'highlight-meaning' : ''}">${escapeHtml(note.meaning)}</span>
-        </div>
+          <div class="word-area" data-load="${note.id}">
+            <div class="word-inline">
+              <span class="note-word ${note.checkWord ? 'highlight-word' : ''}">${escapeHtml(note.word)}</span>
+              <span class="note-pron">${escapeHtml(note.pronunciation || '')}</span>
+            </div>
+            ${posText ? `<div class="selected-pos-text">${escapeHtml(posText)}</div>` : ''}
+          </div>
 
-        <div class="pos-buttons">
-          ${createPosButton(note.id, posList, '명', 'active-noun')}
-          ${createPosButton(note.id, posList, '동', 'active-verb')}
-          ${createPosButton(note.id, posList, '형', 'active-adj')}
-          ${createPosButton(note.id, posList, '부', 'active-adv')}
-          ${createPosButton(note.id, posList, '접', 'active-conj')}
-          ${createPosButton(note.id, posList, '감', 'active-excl')}
-          ${createPosButton(note.id, posList, '숙', 'active-phrase')}
-        </div>
+          <div data-load="${note.id}">
+            <span class="note-meaning ${note.checkMeaning ? 'highlight-meaning' : ''}">${escapeHtml(note.meaning)}</span>
+          </div>
 
-        <div class="check-row">
-          ${createCheckLabel(note.id, 'checkWord', note.checkWord, '단어')}
-          ${createCheckLabel(note.id, 'checkMeaning', note.checkMeaning, '뜻')}
-          ${createCheckLabel(note.id, 'checkMemorized', note.checkMemorized, '외움')}
-        </div>
+          <div class="pos-buttons">
+            ${createPosButton(note.id, posList, '명', 'active-noun')}
+            ${createPosButton(note.id, posList, '동', 'active-verb')}
+            ${createPosButton(note.id, posList, '형', 'active-adj')}
+            ${createPosButton(note.id, posList, '부', 'active-adv')}
+            ${createPosButton(note.id, posList, '접', 'active-conj')}
+            ${createPosButton(note.id, posList, '감', 'active-excl')}
+            ${createPosButton(note.id, posList, '숙', 'active-phrase')}
+          </div>
 
-        <div class="menu-wrap">
-          <button class="menu-btn" data-menu-btn="${note.id}" type="button">⋯</button>
-          <div class="menu-popup" id="menu-${note.id}">
-            <button class="menu-item" data-edit="${note.id}" type="button">수정</button>
-            <button class="menu-item" data-delete="${note.id}" type="button">삭제</button>
+          <div class="check-row">
+            ${createCheckLabel(note.id, 'checkWord', note.checkWord, '단어')}
+            ${createCheckLabel(note.id, 'checkMeaning', note.checkMeaning, '뜻')}
+            ${createCheckLabel(note.id, 'checkMemorized', note.checkMemorized, '외움')}
+          </div>
+
+          <div class="menu-wrap">
+            <button class="menu-btn" data-menu-btn="${note.id}" type="button">⋯</button>
+            <div class="menu-popup" id="menu-${note.id}">
+              <button class="menu-item" data-edit="${note.id}" type="button">수정</button>
+              <button class="menu-item" data-delete="${note.id}" type="button">삭제</button>
+            </div>
           </div>
         </div>
       </div>
     `;
+  }).join('');
 
-    els.noteList.appendChild(item);
-  });
-
-  bindNoteEvents();
+  els.noteList.innerHTML = html;
 }
 
 function createPosButton(id, posList, label, activeClass) {
@@ -547,56 +563,6 @@ function createCheckLabel(id, key, checked, label) {
       ${label}
     </label>
   `;
-}
-
-function bindNoteEvents() {
-  els.noteList.querySelectorAll('input[type="checkbox"]').forEach(box => {
-    box.addEventListener('click', e => e.stopPropagation());
-  });
-
-  els.noteList.querySelectorAll('[data-delete-check]').forEach(box => {
-    box.addEventListener('change', () => toggleDeleteCheck(Number(box.dataset.deleteCheck)));
-  });
-
-  els.noteList.querySelectorAll('input[data-id][data-key]').forEach(box => {
-    box.addEventListener('change', () => toggleCheck(Number(box.dataset.id), box.dataset.key));
-  });
-
-  els.noteList.querySelectorAll('[data-delete]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      deleteNote(Number(btn.dataset.delete));
-    });
-  });
-
-  els.noteList.querySelectorAll('[data-edit]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      startEdit(Number(btn.dataset.edit));
-      closeAllMenus();
-    });
-  });
-
-  els.noteList.querySelectorAll('[data-menu-btn]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const menu = $('menu-' + btn.dataset.menuBtn);
-      const isShown = menu.classList.contains('show');
-      closeAllMenus();
-      if (!isShown) menu.classList.add('show');
-    });
-  });
-
-  els.noteList.querySelectorAll('[data-pos-id]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      togglePos(Number(btn.dataset.posId), btn.dataset.pos);
-    });
-  });
-
-  els.noteList.querySelectorAll('[data-load]').forEach(area => {
-    area.addEventListener('click', () => loadNoteToTop(Number(area.dataset.load)));
-  });
 }
 
 function saveCurrentNote(forceUpdate = false) {
@@ -665,7 +631,7 @@ function saveCurrentNote(forceUpdate = false) {
 }
 
 function startEdit(id) {
-  const target = getNotes().find(item => item.id === id);
+  const target = notesState.find(item => item.id === id);
   if (!target) return;
   lastScrollY = window.scrollY;
   canReturnToList = true;
@@ -677,7 +643,7 @@ function startEdit(id) {
 }
 
 function loadNoteToTop(id) {
-  const target = getNotes().find(item => item.id === id);
+  const target = notesState.find(item => item.id === id);
   if (!target) return;
   lastScrollY = window.scrollY;
   canReturnToList = true;
@@ -695,42 +661,44 @@ function backToSavedPosition() {
 }
 
 function toggleCheck(id, key) {
-  const notes = getNotes();
-  const target = notes.find(item => item.id === id);
-  if (!target) return;
-  target[key] = !target[key];
-  saveNotes(notes);
+  updateNotes(notes => {
+    const target = notes.find(item => item.id === id);
+    if (!target) return;
+    target[key] = !target[key];
+  });
   renderNotes();
 }
 
 function toggleDeleteCheck(id) {
-  const notes = getNotes();
-  const target = notes.find(item => item.id === id);
-  if (!target) return;
-  target.checkedForDelete = !target.checkedForDelete;
-  saveNotes(notes);
+  updateNotes(notes => {
+    const target = notes.find(item => item.id === id);
+    if (!target) return;
+    target.checkedForDelete = !target.checkedForDelete;
+  });
   renderNotes();
 }
 
 function togglePos(id, pos) {
-  const notes = getNotes();
-  const target = notes.find(item => item.id === id);
-  if (!target) return;
-  target.pos = target.pos || [];
-  target.pos = target.pos.includes(pos)
-    ? target.pos.filter(item => item !== pos)
-    : [...target.pos, pos];
-  saveNotes(notes);
+  updateNotes(notes => {
+    const target = notes.find(item => item.id === id);
+    if (!target) return;
+    target.pos = target.pos || [];
+    target.pos = target.pos.includes(pos)
+      ? target.pos.filter(item => item !== pos)
+      : [...target.pos, pos];
+  });
   renderNotes();
 }
 
 function deleteNote(id) {
-  const notes = getNotes();
-  const target = notes.find(item => item.id === id);
+  const target = notesState.find(item => item.id === id);
   if (!target) return;
 
   pendingDeleteAction = () => {
-    saveNotes(notes.filter(item => item.id !== id));
+    updateNotes(notes => {
+      const index = notes.findIndex(item => item.id === id);
+      if (index > -1) notes.splice(index, 1);
+    });
     clearInputs();
     renderNotes();
     showMessage('삭제되었습니다.');
@@ -742,8 +710,7 @@ function deleteNote(id) {
 }
 
 function deleteSelectedNotes() {
-  const notes = getNotes();
-  const selected = notes.filter(note => note.checkedForDelete);
+  const selected = notesState.filter(note => note.checkedForDelete);
 
   if (!selected.length) {
     showMessage('삭제할 항목을 먼저 선택해주세요.');
@@ -751,7 +718,11 @@ function deleteSelectedNotes() {
   }
 
   pendingDeleteAction = () => {
-    saveNotes(notes.filter(note => !note.checkedForDelete));
+    updateNotes(notes => {
+      for (let i = notes.length - 1; i >= 0; i--) {
+        if (notes[i].checkedForDelete) notes.splice(i, 1);
+      }
+    });
     els.selectAllDelete.checked = false;
     clearInputs();
     currentPage = 1;
@@ -775,7 +746,7 @@ function closeDeleteConfirm() {
 }
 
 function analyzeImportRows(rows) {
-  const notes = getNotes();
+  const notes = notesState;
 
   const result = {
     addRows: [],
@@ -850,10 +821,8 @@ function closePreviewModal() {
 function openUpdateCheckModal() {
   if (!pendingImportSummary || !pendingImportSummary.updateRows.length) return;
 
-  const notes = getNotes();
-
   els.updateCheckTableBody.innerHTML = pendingImportSummary.updateRows.map(row => {
-    const existing = notes.find(note => note.word.toLowerCase() === String(row.word || '').toLowerCase());
+    const existing = notesState.find(note => note.word.toLowerCase() === String(row.word || '').toLowerCase());
 
     const oldMeaning = existing?.meaning || '';
     const newMeaning = row.meaning || '';
@@ -1048,7 +1017,7 @@ function getNextQuizCard() {
 }
 
 function openQuizModal() {
-  const notes = getNotes().filter(note => !note.checkMemorized);
+  const notes = notesState.filter(note => !note.checkMemorized);
 
   if (!notes.length) {
     showMessage('퀴즈에 사용할 단어가 없습니다. 외움 체크 안 된 단어를 확인해주세요.');
@@ -1100,14 +1069,12 @@ function quizStudyAgain() {
 function markQuizMemorized() {
   if (!quizCurrent) return;
 
-  const notes = getNotes();
-  const target = notes.find(note => note.id === quizCurrent.id);
-  if (target) {
-    target.checkMemorized = true;
-    saveNotes(notes);
-    renderNotes();
-  }
+  updateNotes(notes => {
+    const target = notes.find(note => note.id === quizCurrent.id);
+    if (target) target.checkMemorized = true;
+  });
 
+  renderNotes();
   getNextQuizCard();
 }
 
@@ -1115,6 +1082,68 @@ function setQuizMode(mode) {
   quizMode = mode;
   updateQuizModeButtons();
   if (quizCurrent) renderQuizCard();
+}
+
+function debounceRenderNotes(delay = 120) {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    currentPage = 1;
+    renderNotes();
+  }, delay);
+}
+
+function handleNoteListClick(e) {
+  const target = e.target;
+
+  const menuBtn = target.closest('[data-menu-btn]');
+  if (menuBtn) {
+    e.stopPropagation();
+    const menu = $('menu-' + menuBtn.dataset.menuBtn);
+    const isShown = menu.classList.contains('show');
+    closeAllMenus();
+    if (!isShown) menu.classList.add('show');
+    return;
+  }
+
+  const deleteBtn = target.closest('[data-delete]');
+  if (deleteBtn) {
+    e.stopPropagation();
+    deleteNote(Number(deleteBtn.dataset.delete));
+    return;
+  }
+
+  const editBtn = target.closest('[data-edit]');
+  if (editBtn) {
+    e.stopPropagation();
+    startEdit(Number(editBtn.dataset.edit));
+    closeAllMenus();
+    return;
+  }
+
+  const posBtn = target.closest('[data-pos-id]');
+  if (posBtn) {
+    e.stopPropagation();
+    togglePos(Number(posBtn.dataset.posId), posBtn.dataset.pos);
+    return;
+  }
+
+  const loadArea = target.closest('[data-load]');
+  if (loadArea) {
+    loadNoteToTop(Number(loadArea.dataset.load));
+  }
+}
+
+function handleNoteListChange(e) {
+  const target = e.target;
+
+  if (target.matches('[data-delete-check]')) {
+    toggleDeleteCheck(Number(target.dataset.deleteCheck));
+    return;
+  }
+
+  if (target.matches('input[data-id][data-key]')) {
+    toggleCheck(Number(target.dataset.id), target.dataset.key);
+  }
 }
 
 els.passwordSubmitButton.addEventListener('click', tryUnlock);
@@ -1227,16 +1256,16 @@ els.updateCheckApplyButton.addEventListener('click', () => {
 });
 
 els.selectAllDelete.addEventListener('change', () => {
-  const visibleIds = getPagedNotes(getFilteredNotes(getNotes())).items.map(item => item.id);
-  const notes = getNotes();
+  const visibleIds = getPagedNotes(getFilteredNotes(notesState)).items.map(item => item.id);
 
-  notes.forEach(note => {
-    if (visibleIds.includes(note.id)) {
-      note.checkedForDelete = els.selectAllDelete.checked;
-    }
+  updateNotes(notes => {
+    notes.forEach(note => {
+      if (visibleIds.includes(note.id)) {
+        note.checkedForDelete = els.selectAllDelete.checked;
+      }
+    });
   });
 
-  saveNotes(notes);
   renderNotes();
 });
 
@@ -1270,8 +1299,7 @@ els.pronunciationInput.addEventListener('keydown', e => {
 });
 
 els.searchInput.addEventListener('input', () => {
-  currentPage = 1;
-  renderNotes();
+  debounceRenderNotes(120);
 });
 
 els.searchClearButton.addEventListener('click', () => {
@@ -1307,7 +1335,7 @@ els.prevPageButton.addEventListener('click', () => {
 });
 
 els.nextPageButton.addEventListener('click', () => {
-  const totalPages = getPagedNotes(getFilteredNotes(getNotes())).totalPages;
+  const totalPages = getPagedNotes(getFilteredNotes(notesState)).totalPages;
   if (currentPage < totalPages) {
     currentPage++;
     renderNotes();
@@ -1338,6 +1366,9 @@ els.quizMemorizedButton.addEventListener('click', markQuizMemorized);
 els.quizStudyAgainButton.addEventListener('click', quizStudyAgain);
 els.quizNextButton.addEventListener('click', getNextQuizCard);
 
+els.noteList.addEventListener('click', handleNoteListClick);
+els.noteList.addEventListener('change', handleNoteListChange);
+
 [els.confirmModal, els.deleteConfirmModal, els.quizModal, els.previewModal, els.updateCheckModal].forEach(modal => {
   if (!modal) return;
   modal.addEventListener('click', e => {
@@ -1350,9 +1381,14 @@ els.quizNextButton.addEventListener('click', getNextQuizCard);
   });
 });
 
-document.addEventListener('click', closeAllMenus);
+document.addEventListener('click', e => {
+  if (!e.target.closest('.menu-wrap')) {
+    closeAllMenus();
+  }
+});
 
 window.addEventListener('load', () => {
+  loadNotesState();
   syncHideMemorizedUI();
 
   if (isUnlocked()) {
