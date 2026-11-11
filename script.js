@@ -540,9 +540,24 @@ function renderNotes() {
           <div class="menu-wrap">
             <button class="menu-btn" data-menu-btn="${note.id}" type="button">⋯</button>
             <div class="menu-popup" id="menu-${note.id}">
-              <button class="menu-item" data-edit="${note.id}" type="button">수정</button>
-              <button class="menu-item" data-delete="${note.id}" type="button">삭제</button>
-            </div>
+  <button class="menu-item" data-edit="${note.id}" type="button">
+    수정
+  </button>
+
+  ${note.checkMemorized ? `
+    <button
+      class="menu-item"
+      data-unhide="${note.id}"
+      type="button"
+    >
+      숨김 해제
+    </button>
+  ` : ''}
+
+  <button class="menu-item" data-delete="${note.id}" type="button">
+    삭제
+  </button>
+</div>
           </div>
         </div>
       </div>
@@ -1105,6 +1120,13 @@ function handleNoteListClick(e) {
     return;
   }
 
+  const unhideBtn = target.closest('[data-unhide]');
+
+if (unhideBtn) {
+  e.stopPropagation();
+  unhideNote(Number(unhideBtn.dataset.unhide));
+  return;
+}
   const deleteBtn = target.closest('[data-delete]');
   if (deleteBtn) {
     e.stopPropagation();
@@ -1270,6 +1292,56 @@ els.selectAllDelete.addEventListener('change', () => {
 });
 
 els.deleteSelectedButton.addEventListener('click', deleteSelectedNotes);
+
+function unhideNote(id) {
+  const target = notesState.find(note => note.id === id);
+
+  if (!target || !target.checkMemorized) return;
+
+  updateNotes(notes => {
+    const note = notes.find(item => item.id === id);
+
+    if (!note) return;
+
+    note.checkMemorized = false;
+    note.checkedForDelete = false;
+  });
+
+  closeAllMenus();
+  renderNotes();
+  showMessage('숨김을 해제했습니다.');
+}
+
+function unhideSelectedNotes() {
+  const selectedHiddenNotes = notesState.filter(
+    note => note.checkedForDelete && note.checkMemorized
+  );
+
+  if (!selectedHiddenNotes.length) {
+    showMessage('숨김을 해제할 외운 단어를 먼저 선택해주세요.');
+    return;
+  }
+
+  updateNotes(notes => {
+    notes.forEach(note => {
+      if (note.checkedForDelete && note.checkMemorized) {
+        note.checkMemorized = false;
+        note.checkedForDelete = false;
+      }
+    });
+  });
+
+  renderNotes();
+  showMessage(
+    `${selectedHiddenNotes.length}개 단어의 숨김을 해제했습니다.`
+  );
+}
+
+// HTML에 추가한 버튼 연결
+$('unhideSelectedButton').addEventListener(
+  'click',
+  unhideSelectedNotes
+);
 
 els.wordInput.addEventListener('input', () => {
   updateWordInputFont();
